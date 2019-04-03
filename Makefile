@@ -8,4 +8,4 @@ BUILD_PATH=bin
 build_win:
 	$(GOBUILD) -o $(BUILD_PATH)/$(WIN_BINARY_NAME) -v
 
-.PHONY: build
+.PHONY: build_win
