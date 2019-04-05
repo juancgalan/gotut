@@ -121,7 +121,7 @@ func TestParallelSolveTriang2(t *testing.T) {
 		{5, 10, 15, 20, 25},
 	}
 	result := mmul(vec, mtx)
-	e := parallelSolveTriang(mtx, result, 2)
+	e := parallelSolveTriang2(mtx, result, 2)
 	for i := range e {
 		if e[i] != vec[i] {
 			t.Errorf("Incorrect cell value, got %v, expected %v, target %v", e, vec, result)

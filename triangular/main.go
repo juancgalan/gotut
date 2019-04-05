@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	"sync"
 )
@@ -8,40 +9,48 @@ import (
 type Matrixf [][]float64
 type Vectorf []float64
 
-type FutureFt64 struct {
-	barrier  map[chan struct{}]struct{}
-	data     float64
-	resolved boolean
-	mutex    *sync.Mutex
+type FutureF64 struct {
+	barrier    []chan struct{}
+	data       float64
+	resolved   bool
+	mutex      *sync.RWMutex
+	barrierMtx *sync.Mutex
 }
 
 func NewFutureF64() FutureF64 {
 	return FutureF64{
-		barrier:  make(map[chan struct{}]struct{}),
-		data:     0,
-		resolved: false,
-		mutex:    &sync.Mutex{},
+		barrier:    make([]chan struct{}, 0),
+		data:       0,
+		resolved:   false,
+		mutex:      &sync.RWMutex{},
+		barrierMtx: &sync.Mutex{},
 	}
 }
 
-func (f *FutureFloat64) set(val float64) {
+func (f *FutureF64) set(val float64) {
 	if f.resolved {
 		return
 	}
+	f.mutex.Lock()
 	f.data = val
 	f.resolved = true
 	for i := range f.barrier {
 		close(f.barrier[i])
 	}
+	f.mutex.Unlock()
 }
 
-func (f *FutureFloat64) get() {
+func (f *FutureF64) get() float64 {
+	f.mutex.RLock()
 	if f.resolved {
 		return f.data
 	}
 	c := make(chan struct{})
-	f.barrier[c] = nil
-	_ = <-c
+	f.barrierMtx.Lock()
+	f.barrier = append(f.barrier, c)
+	f.barrierMtx.Unlock()
+	f.mutex.RUnlock()
+	<-c
 	return f.data
 }
 
@@ -158,6 +167,10 @@ func parallelSolveTriang(system Matrixf, target Vectorf, cpu int) (x Vectorf) {
 
 func parallelSolveTriang2(system Matrixf, target Vectorf, cpu int) (x Vectorf) {
 	x = zeroVec(len(target))
+	fx := make([]FutureF64, len(target))
+	for i := range fx {
+		fx[i] = NewFutureF64()
+	}
 	c := make([]chan int, cpu, cpu)
 	for i := range c {
 		c[i] = make(chan int)
@@ -169,9 +182,9 @@ func parallelSolveTriang2(system Matrixf, target Vectorf, cpu int) (x Vectorf) {
 				}
 				sum := 0.0
 				for j := 0; j < id; j += 1 {
-					sum += system[id][j] * x[j]
+					sum += system[id][j] * fx[j].get()
 				}
-				x[id] = (target[id] - sum) / system[id][id]
+				fx[id].set((target[id] - sum) / system[id][id])
 			}
 		}(c[i])
 	}
@@ -181,9 +194,27 @@ func parallelSolveTriang2(system Matrixf, target Vectorf, cpu int) (x Vectorf) {
 	for i := range c {
 		c[i] <- -1
 	}
+	for i := range fx {
+		x[i] = fx[i].get()
+	}
 	return
 }
 
 func main() {
-
+	vec := []float64{1, 2, 3, 4, 5}
+	mtx := [][]float64{
+		{1, 0, 0, 0, 0},
+		{2, 7, 0, 0, 0},
+		{3, 8, 13, 0, 0},
+		{4, 9, 14, 19, 0},
+		{5, 10, 15, 20, 25},
+	}
+	result := mmul(vec, mtx)
+	e := parallelSolveTriang2(mtx, result, 2)
+	for i := range e {
+		fmt.Printf("%2.2f ", e[i])
+		if e[i] != vec[i] {
+			fmt.Printf("Incorrect cell value,\n got %v, \nexpected %v, \ntarget %v\n", e, vec, result)
+		}
+	}
 }
