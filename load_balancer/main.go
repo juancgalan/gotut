@@ -7,7 +7,7 @@ import (
 	"net"
 )
 
-type DFAF func(byte) *HTTPReq
+type DFAF func(*HTTPReq, byte) *HTTPReq
 
 const NEWLINE = 10
 const RETURN = 13
@@ -25,54 +25,57 @@ type HTTPReq struct {
 	err     error
 }
 
-func (a *HTTPReq) waitEOF(b byte) *HTTPReq {
-	a.message = append(a.message, b)
-	if b == NEWLINE {
-		a.eof = true
-		a.state = nil
-	} else {
-		a.state = a.reqBody
-	}
-	return a
-}
-
-func (a *HTTPReq) endBody(b byte) *HTTPReq {
-	a.message = append(a.message, b)
+func sHTTPNewLineEOF(b byte, other DFAF) DFAF {
 	if b == RETURN {
-		a.state = a.waitEOF
+		return func(aa *HTTPReq, c byte) *HTTPReq {
+			aa.message = append(aa.message, c)
+			if c == NEWLINE {
+				aa.eof = true
+				aa.state = nil
+				return aa
+			} else {
+				aa.state = other
+				return aa
+			}
+		}
+
 	} else {
-		a.state = a.reqBody
+		return other
 	}
-	return a
 }
 
-func (a *HTTPReq) waitNewLine(b byte) *HTTPReq {
-	a.message = append(a.message, b)
-	if b == NEWLINE {
-		a.state = a.endBody
-	} else {
-		a.state = a.reqBody
-	}
-	return a
-}
-
-func (a *HTTPReq) reqBody(b byte) *HTTPReq {
-	a.message = append(a.message, b)
+func sHTTPNewLine(b byte, newline, other DFAF) DFAF {
 	if b == RETURN {
-		a.state = a.waitNewLine
+		return func(aa *HTTPReq, c byte) *HTTPReq {
+			aa.message = append(aa.message, c)
+			if c == NEWLINE {
+				aa.state = newline
+				return aa
+			} else {
+				aa.state = other
+				return aa
+			}
+		}
 	} else {
-		a.state = a.reqBody
+		return other
 	}
+}
+
+func EOF(a *HTTPReq, b byte) *HTTPReq {
+	a.message = append(a.message, b)
+	a.state = sHTTPNewLineEOF(b, sHEADER)
 	return a
 }
 
-func (a *HTTPReq) init(b byte) *HTTPReq {
-	if b == RETURN {
-		a.state = nil
-		a.err = errors.New("Invalid Request!")
-	}
+func sHEADER(a *HTTPReq, b byte) *HTTPReq {
 	a.message = append(a.message, b)
-	a.state = a.reqBody
+	a.state = sHTTPNewLine(b, EOF, sHEADER)
+	return a
+}
+
+func sGET(a *HTTPReq, b byte) *HTTPReq {
+	a.message = append(a.message, b)
+	a.state = sHTTPNewLine(b, EOF, sGET)
 	return a
 }
 
@@ -83,7 +86,7 @@ func NewHTTPReq() (ans *HTTPReq) {
 		eof:     false,
 		err:     nil,
 	}
-	ans.state = ans.init
+	ans.state = sGET
 	return
 }
 
@@ -108,7 +111,7 @@ func sendRequest(conn *Connection, data []byte) ([]byte, error) {
 	m := NewHTTPReq()
 	for {
 		b, _ := conn.Rx.ReadByte()
-		m = m.state(b)
+		m = m.state(m, b)
 		if m.err != nil {
 			fmt.Printf("Invalid Answer\n")
 			return nil, errors.New("500")
@@ -117,15 +120,21 @@ func sendRequest(conn *Connection, data []byte) ([]byte, error) {
 			break
 		}
 	}
+	for i := 0; i < 612; i += 1 {
+		b, _ := conn.Rx.ReadByte()
+		m.message = append(m.message, b)
+	}
 	return m.message, nil
 }
 
 func handleRequest(conn net.Conn) {
+	defer conn.Close()
 	r := bufio.NewReader(conn)
 	m := NewHTTPReq()
+	fmt.Println("--------Requested connection, acquiring data")
 	for {
 		b, _ := r.ReadByte()
-		m = m.state(b)
+		m = m.state(m, b)
 		if m.err != nil {
 			fmt.Printf("Invalid request\n")
 			return
@@ -134,19 +143,25 @@ func handleRequest(conn net.Conn) {
 			break
 		}
 	}
-	fmt.Println("Requested received, rerouting")
-	c, err := NewConnection("tcp", "localhost:80")
+	fmt.Print(string(m.message))
+	fmt.Println("--------Request received, rerouting")
+	c, err := NewConnection("tcp", "localhost:8080")
 	if err != nil {
 		fmt.Printf("Error redirecting to server")
 		return
 	}
 	ans, _ := sendRequest(c, m.message)
-	fmt.Println("Server responded, rerouting")
 	fmt.Print(string(ans))
+	fmt.Println("--------Server responded, rerouting")
+	w := bufio.NewWriter(conn)
+	for i := range ans {
+		w.WriteByte(ans[i])
+	}
+	w.Flush()
 }
 
 func SimpleBalancer() {
-	ln, _ := net.Listen("tcp", ":8080")
+	ln, _ := net.Listen("tcp", ":8000")
 	for {
 		conn, _ := ln.Accept()
 		handleRequest(conn)
@@ -155,6 +170,6 @@ func SimpleBalancer() {
 
 func main() {
 	fmt.Printf("Starting Balancer...\n")
-	fmt.Printf("^C for ending...")
+	fmt.Printf("^C for ending...\n")
 	SimpleBalancer()
 }
